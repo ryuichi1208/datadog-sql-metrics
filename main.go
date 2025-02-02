@@ -4,14 +4,11 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"regexp"
-	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -166,26 +163,6 @@ func (p *PostgresDB) QueryRow(query string) (float64, error) {
 	default:
 		return 0, fmt.Errorf("unexpected data type: %T", v)
 	}
-}
-
-func validateQuery(query string) error {
-	// クエリの前後の空白を削除し、小文字化
-	cleanQuery := strings.TrimSpace(strings.ToLower(query))
-
-	// "select" で始まっているか確認
-	if !strings.HasPrefix(cleanQuery, "select") {
-		return errors.New("invalid query: only SELECT statements are allowed")
-	}
-
-	// 禁止ワードチェック
-	blacklist := []string{"insert", "update", "delete", "drop", "alter", "truncate", "create", "replace"}
-	re := regexp.MustCompile(`\b(` + strings.Join(blacklist, "|") + `)\b`)
-
-	if re.MatchString(cleanQuery) {
-		return errors.New("invalid query: detected a forbidden SQL command")
-	}
-
-	return nil
 }
 
 func run() error {
