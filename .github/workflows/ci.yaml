@@ -42,5 +42,6 @@ jobs:
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
       - name: Run golangci-lint
-        run: golangci-lint run .
+        run: golangci-lint run --path-prefix .
+
 
