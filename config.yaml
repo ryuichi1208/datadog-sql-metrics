@@ -1,7 +1,6 @@
 metrics:
   - name: "custom.metric.cpu_usage"
-    value: 72.5
-    tags: ["env:production", "team:sre"]
+    tags: ["env:test", "team:sre"]
     host: "server-01"
     query: "SELECT age FROM users LIMIT 1;"
 
