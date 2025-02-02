@@ -3,9 +3,5 @@ metrics:
     value: 72.5
     tags: ["env:production", "team:sre"]
     host: "server-01"
-
-  - name: "custom.metric.memory_usage"
-    value: 58.3
-    tags: ["env:staging", "app:web"]
-    host: "server-02"
+    query: "SELECT age FROM users LIMIT 1;"
 

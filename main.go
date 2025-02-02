@@ -2,12 +2,19 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
+	_ "github.com/lib/pq"
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,9 +38,9 @@ type Config struct {
 
 type MetricConfig struct {
 	Name  string   `yaml:"name"`
-	Value float64  `yaml:"value"`
 	Tags  []string `yaml:"tags"`
 	Host  string   `yaml:"host"`
+	Query string   `yaml:"query,omitempty"` // SQL クエリ（省略可能）
 }
 
 // Metric データの構造体（Datadog API用）
@@ -47,6 +54,16 @@ type DataSeries struct {
 	Tags   []string    `json:"tags,omitempty"`
 	Host   string      `json:"host,omitempty"`
 	Type   string      `json:"type,omitempty"`
+}
+
+// DBClient インターフェース: テスト時にモックを使えるようにする
+type DBClient interface {
+	QueryRow(query string) (float64, error)
+}
+
+// PostgresDB は 実際の PostgreSQL に接続する実装
+type PostgresDB struct {
+	DB *sql.DB
 }
 
 // SendMetric メソッド: Datadog にメトリクスを送信
@@ -109,27 +126,124 @@ func loadConfig(filename string) (*Config, error) {
 	return &config, nil
 }
 
-func main() {
+// PostgreSQL から値を取得する関数
+func fetchMetricFromDB(db *sql.DB, query string) (float64, error) {
+	var value interface{} // 型が int か float64 か不明なため interface{} で受け取る
+	err := db.QueryRow(query).Scan(&value)
+	if err != nil {
+		return 0, fmt.Errorf("failed to execute query: %w", err)
+	}
+
+	// 取得した値の型を確認して float64 に変換
+	switch v := value.(type) {
+	case int:
+		return float64(v), nil
+	case int64:
+		return float64(v), nil
+	case float64:
+		return v, nil
+	default:
+		return 0, fmt.Errorf("unexpected data type: %T", v)
+	}
+}
+
+// QueryRow メソッド: SQL を実行し、値を取得する
+func (p *PostgresDB) QueryRow(query string) (float64, error) {
+	var value interface{}
+	err := p.DB.QueryRow(query).Scan(&value)
+	if err != nil {
+		return 0, fmt.Errorf("failed to execute query: %w", err)
+	}
+
+	// 型を判定して float64 に変換
+	switch v := value.(type) {
+	case int:
+		return float64(v), nil
+	case int64:
+		return float64(v), nil
+	case float64:
+		return v, nil
+	default:
+		return 0, fmt.Errorf("unexpected data type: %T", v)
+	}
+}
+
+func validateQuery(query string) error {
+	// クエリの前後の空白を削除し、小文字化
+	cleanQuery := strings.TrimSpace(strings.ToLower(query))
+
+	// "select" で始まっているか確認
+	if !strings.HasPrefix(cleanQuery, "select") {
+		return errors.New("invalid query: only SELECT statements are allowed")
+	}
+
+	// 禁止ワードチェック
+	blacklist := []string{"insert", "update", "delete", "drop", "alter", "truncate", "create", "replace"}
+	re := regexp.MustCompile(`\b(` + strings.Join(blacklist, "|") + `)\b`)
+
+	if re.MatchString(cleanQuery) {
+		return errors.New("invalid query: detected a forbidden SQL command")
+	}
+
+	return nil
+}
+
+func run() error {
+	// コマンドライン引数から YAML ファイルを指定可能
+	yamlFile := flag.String("config", "config.yaml", "Path to the YAML configuration file")
+	flag.Parse()
+
 	apiKey := os.Getenv("DATADOG_API_KEY")
 	if apiKey == "" {
-		fmt.Println("DATADOG_API_KEY is not set")
-		return
+		return fmt.Errorf("DATADOG_API_KEY is not set")
 	}
+
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		return fmt.Errorf("DATABASE_URL is not set")
+	}
+
+	// PostgreSQL 接続
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		return fmt.Errorf("failed to connect to DB: %w", err)
+	}
+	defer db.Close()
 
 	client := &DatadogClient{APIKey: apiKey}
 
 	// 設定ファイルの読み込み
-	config, err := loadConfig("config.yaml")
+	config, err := loadConfig(*yamlFile)
 	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
-		return
+		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// YAML から読み込んだメトリクスを送信
+	var value float64
 	for _, metric := range config.Metrics {
-		err := client.SendMetric(metric.Name, metric.Value, metric.Tags, metric.Host)
-		if err != nil {
-			fmt.Printf("Error sending metric %s: %v\n", metric.Name, err)
+		if err := validateQuery(metric.Query); err != nil {
+			log.Printf("%v", err)
 		}
+
+		if metric.Query != "" {
+			fetchedValue, err := fetchMetricFromDB(db, metric.Query)
+			if err != nil {
+				log.Printf("Error fetching metric %s from DB: %v", metric.Name, err)
+				continue
+			}
+			value = fetchedValue
+		}
+
+		err := client.SendMetric(metric.Name, value, metric.Tags, metric.Host)
+		if err != nil {
+			return fmt.Errorf("failed to send metric: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
 	}
 }
