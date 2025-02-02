@@ -2,9 +2,42 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 )
+
+// validateDBURL は、渡されたデータベース接続URLが有効な形式であるかをチェックします。
+// ・URL のパースに成功するか
+// ・スキームが "postgres" または "postgresql" であるか
+// ・ホスト部分が空でないか
+// ・パス部分（データベース名）が指定されているか（"/" や空文字列ではないか）
+// これらの条件を満たさない場合はエラーを返します。
+func validateDBURL(dbURL string) error {
+	u, err := url.Parse(dbURL)
+	if err != nil {
+		return fmt.Errorf("invalid database URL: %w", err)
+	}
+
+	// スキームチェック
+	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
+		return errors.New("invalid database URL: scheme must be 'postgres' or 'postgresql'")
+	}
+
+	// ホストチェック
+	if u.Host == "" {
+		return errors.New("invalid database URL: host is empty")
+	}
+
+	// データベース名チェック（パス部分）
+	// u.Path は先頭に "/" が付いているので、"/" のみまたは空文字列なら不正とする
+	if u.Path == "" || u.Path == "/" {
+		return errors.New("invalid database URL: database name is missing")
+	}
+
+	return nil
+}
 
 // validateQuery は、与えられた SQL クエリが有効な SELECT 文であり、
 // 禁止コマンドが含まれておらず、SELECT句で複数カラムが指定されていないかを検証します。

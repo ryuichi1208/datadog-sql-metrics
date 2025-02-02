@@ -179,6 +179,9 @@ func run() error {
 	if dbURL == "" {
 		return fmt.Errorf("DATABASE_URL is not set")
 	}
+	if err := validateDBURL(dbURL); err != nil {
+		return fmt.Errorf("invalid DATABASE_URL: %w", err)
+	}
 
 	// PostgreSQL 接続
 	db, err := sql.Open("postgres", dbURL)
