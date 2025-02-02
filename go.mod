@@ -1,4 +1,4 @@
-module github.com/ryuichi1208/datadog-sql-metics
+module github.com/ryuichi1208/datadog-sql-metrics
 
 go 1.23.2
 
