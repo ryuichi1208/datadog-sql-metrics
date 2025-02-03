@@ -3,7 +3,14 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o datadog-sql-metics .
+ARG VERSION
+ARG REVISION
+ARG BUILD
+RUN CGO_ENABLED=0 GOOS=linux go build -race -ldflags "\
+        -X main.version=${VERSION} \
+        -X main.revision=${REVISION} \
+        -X main.build=${BUILD} \
+	-s -w" -o datadog-sql-metics .
 
 FROM alpine:latest
 WORKDIR /app

@@ -168,7 +168,14 @@ func (p *PostgresDB) QueryRow(query string) (float64, error) {
 func run() error {
 	// コマンドライン引数から YAML ファイルを指定可能
 	yamlFile := flag.String("config", "config.yaml", "Path to the YAML configuration file")
+	// version情報を表示
+	versionFlag := flag.Bool("version", false, "Print the version information")
 	flag.Parse()
+
+	if *versionFlag {
+		_version()
+		return nil
+	}
 
 	apiKey := os.Getenv("DATADOG_API_KEY")
 	if apiKey == "" {
