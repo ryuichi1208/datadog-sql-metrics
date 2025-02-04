@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "\
         -X main.build=${BUILD} \
 	-s -w" -o datadog-sql-metrics .
 
-FROM alpine:latest
+FROM alpine:3.21
 WORKDIR /app
 COPY --from=builder /app/datadog-sql-metrics .
 COPY --from=builder /app/config.yaml .
