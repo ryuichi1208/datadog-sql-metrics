@@ -186,7 +186,17 @@ func fetchMetricFromDB(db *sql.DB, query string) (float64, error) {
 }
 
 func (p *SQLDB) QueryRow(query string) (float64, error) {
-	return fetchMetricFromDB(p.DB, query)
+	startTime := time.Now()
+	value, err := fetchMetricFromDB(p.DB, query)
+	duration := time.Since(startTime)
+
+	// Log the query execution time
+	logJSON("info", "Query execution completed", map[string]interface{}{
+		"query_time_ms": float64(duration.Microseconds()) / 1000.0,
+		"query":         query,
+	})
+
+	return value, err
 }
 
 func run() error {
@@ -264,11 +274,15 @@ func run() error {
 				})
 			}
 
+			startTime := time.Now()
 			fetchedValue, err := dbClient.QueryRow(metric.Query)
+			duration := time.Since(startTime)
+
 			if err != nil {
 				logJSON("error", "Error fetching metric from DB", map[string]interface{}{
-					"metric": metric.Name,
-					"error":  err.Error(),
+					"metric":        metric.Name,
+					"error":         err.Error(),
+					"query_time_ms": float64(duration.Microseconds()) / 1000.0,
 				})
 				continue
 			}
@@ -276,8 +290,9 @@ func run() error {
 
 			if *debugFlag {
 				logJSON("debug", "SQL query result", map[string]interface{}{
-					"metric": metric.Name,
-					"value":  value,
+					"metric":        metric.Name,
+					"value":         value,
+					"query_time_ms": float64(duration.Microseconds()) / 1000.0,
 				})
 			}
 		}
