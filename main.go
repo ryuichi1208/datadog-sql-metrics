@@ -24,6 +24,7 @@ type MetricSender interface {
 
 type DatadogClient struct {
 	APIKey string
+	Debug  bool
 }
 
 type Config struct {
@@ -49,12 +50,36 @@ type DataSeries struct {
 	Type   string      `json:"type,omitempty"`
 }
 
+type LogEntry struct {
+	Timestamp string      `json:"timestamp"`
+	Level     string      `json:"level"`
+	Message   string      `json:"message"`
+	Data      interface{} `json:"data,omitempty"`
+}
+
 type DBClient interface {
 	QueryRow(query string) (float64, error)
 }
 
 type SQLDB struct {
 	DB *sql.DB
+}
+
+func logJSON(level, message string, data interface{}) {
+	entry := LogEntry{
+		Timestamp: time.Now().Format(time.RFC3339),
+		Level:     level,
+		Message:   message,
+		Data:      data,
+	}
+
+	jsonData, err := json.Marshal(entry)
+	if err != nil {
+		log.Printf("Error marshaling log: %v", err)
+		return
+	}
+
+	fmt.Println(string(jsonData))
 }
 
 func (d *DatadogClient) SendMetric(metricName string, value float64, tags []string, host string) error {
@@ -77,6 +102,17 @@ func (d *DatadogClient) SendMetric(metricName string, value float64, tags []stri
 		return fmt.Errorf("failed to encode JSON: %w", err)
 	}
 
+	if d.Debug {
+		logJSON("debug", "Sending metric to Datadog", map[string]interface{}{
+			"metric":  metricName,
+			"value":   value,
+			"tags":    tags,
+			"host":    host,
+			"url":     datadogAPI,
+			"payload": string(payload),
+		})
+	}
+
 	req, err := http.NewRequest("POST", datadogAPI, bytes.NewBuffer(payload))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -96,7 +132,11 @@ func (d *DatadogClient) SendMetric(metricName string, value float64, tags []stri
 		return fmt.Errorf("unexpected response code: %d", resp.StatusCode)
 	}
 
-	fmt.Println("Metric sent successfully:", metricName)
+	logJSON("info", "Metric sent successfully", map[string]interface{}{
+		"metric": metricName,
+		"status": resp.StatusCode,
+	})
+
 	return nil
 }
 
@@ -141,6 +181,7 @@ func (p *SQLDB) QueryRow(query string) (float64, error) {
 func run() error {
 	yamlFile := flag.String("config", "config.yaml", "Path to the YAML configuration file")
 	versionFlag := flag.Bool("version", false, "Print the version information")
+	debugFlag := flag.Bool("debug", false, "Enable debug mode")
 	flag.Parse()
 
 	if *versionFlag {
@@ -163,17 +204,34 @@ func run() error {
 		dbType = "postgres" // デフォルトは PostgreSQL
 	}
 
+	if *debugFlag {
+		logJSON("debug", "Debug mode enabled", map[string]interface{}{
+			"config":        *yamlFile,
+			"database_url":  dbURL,
+			"database_type": dbType,
+		})
+	}
+
 	db, err := sql.Open(dbType, dbURL)
 	if err != nil {
 		return fmt.Errorf("failed to connect to DB: %w", err)
 	}
 	defer db.Close()
 
-	client := &DatadogClient{APIKey: apiKey}
+	client := &DatadogClient{
+		APIKey: apiKey,
+		Debug:  *debugFlag,
+	}
 
 	config, err := loadConfig(*yamlFile)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	if *debugFlag {
+		logJSON("debug", "Configuration file loaded", map[string]interface{}{
+			"metrics_count": len(config.Metrics),
+		})
 	}
 
 	dbClient := &SQLDB{DB: db}
@@ -181,17 +239,37 @@ func run() error {
 	for _, metric := range config.Metrics {
 		var value float64
 		if metric.Query != "" {
+			if *debugFlag {
+				logJSON("debug", "Executing SQL query", map[string]interface{}{
+					"metric": metric.Name,
+					"query":  metric.Query,
+				})
+			}
+
 			fetchedValue, err := dbClient.QueryRow(metric.Query)
 			if err != nil {
-				log.Printf("Error fetching metric %s from DB: %v", metric.Name, err)
+				logJSON("error", "Error fetching metric from DB", map[string]interface{}{
+					"metric": metric.Name,
+					"error":  err.Error(),
+				})
 				continue
 			}
 			value = fetchedValue
+
+			if *debugFlag {
+				logJSON("debug", "SQL query result", map[string]interface{}{
+					"metric": metric.Name,
+					"value":  value,
+				})
+			}
 		}
 
 		err := client.SendMetric(metric.Name, value, metric.Tags, metric.Host)
 		if err != nil {
-			log.Printf("Failed to send metric: %v", err)
+			logJSON("error", "Failed to send metric", map[string]interface{}{
+				"metric": metric.Name,
+				"error":  err.Error(),
+			})
 		}
 	}
 
@@ -200,6 +278,9 @@ func run() error {
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal(err)
+		logJSON("fatal", "Execution error", map[string]interface{}{
+			"error": err.Error(),
+		})
+		os.Exit(1)
 	}
 }
