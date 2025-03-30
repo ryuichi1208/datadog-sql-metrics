@@ -25,6 +25,7 @@ type MetricSender interface {
 type DatadogClient struct {
 	APIKey string
 	Debug  bool
+	DryRun bool
 }
 
 type Config struct {
@@ -113,6 +114,16 @@ func (d *DatadogClient) SendMetric(metricName string, value float64, tags []stri
 		})
 	}
 
+	if d.DryRun {
+		logJSON("info", "Dry run mode - skipping actual metric submission", map[string]interface{}{
+			"metric": metricName,
+			"value":  value,
+			"tags":   tags,
+			"host":   host,
+		})
+		return nil
+	}
+
 	req, err := http.NewRequest("POST", datadogAPI, bytes.NewBuffer(payload))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -182,6 +193,7 @@ func run() error {
 	yamlFile := flag.String("config", "config.yaml", "Path to the YAML configuration file")
 	versionFlag := flag.Bool("version", false, "Print the version information")
 	debugFlag := flag.Bool("debug", false, "Enable debug mode")
+	dryRunFlag := flag.Bool("dry-run", false, "Dry run mode - don't actually send metrics to Datadog")
 	flag.Parse()
 
 	if *versionFlag {
@@ -190,7 +202,7 @@ func run() error {
 	}
 
 	apiKey := os.Getenv("DATADOG_API_KEY")
-	if apiKey == "" {
+	if apiKey == "" && !*dryRunFlag {
 		return fmt.Errorf("DATADOG_API_KEY is not set")
 	}
 
@@ -209,7 +221,12 @@ func run() error {
 			"config":        *yamlFile,
 			"database_url":  dbURL,
 			"database_type": dbType,
+			"dry_run":       *dryRunFlag,
 		})
+	}
+
+	if *dryRunFlag {
+		logJSON("info", "Dry run mode enabled - no metrics will be sent to Datadog", nil)
 	}
 
 	db, err := sql.Open(dbType, dbURL)
@@ -221,6 +238,7 @@ func run() error {
 	client := &DatadogClient{
 		APIKey: apiKey,
 		Debug:  *debugFlag,
+		DryRun: *dryRunFlag,
 	}
 
 	config, err := loadConfig(*yamlFile)
