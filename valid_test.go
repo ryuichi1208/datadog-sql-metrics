@@ -10,7 +10,7 @@ func TestValidateDBURL(t *testing.T) {
 		name    string
 		dbURL   string
 		wantErr bool
-		errMsg  string // エラーメッセージに含まれるべきキーワード（任意）
+		errMsg  string // Expected keyword in error message (optional)
 	}{
 		{
 			name:    "Valid URL with postgres scheme",
@@ -40,6 +40,43 @@ func TestValidateDBURL(t *testing.T) {
 			wantErr: true,
 			errMsg:  "database name is missing",
 		},
+		{
+			name:    "Malformed URL",
+			dbURL:   "postgres:invalid-url-format",
+			wantErr: true,
+			errMsg:  "invalid database URL",
+		},
+		{
+			name:    "URL with slash instead of database name",
+			dbURL:   "postgres://user:pass@localhost:5432/",
+			wantErr: true,
+			errMsg:  "database name is missing",
+		},
+		{
+			name:    "Valid URL with additional parameters",
+			dbURL:   "postgres://user:pass@localhost:5432/dbname?connect_timeout=10&application_name=myapp",
+			wantErr: false,
+		},
+		{
+			name:    "URL without credentials",
+			dbURL:   "postgres://localhost:5432/dbname",
+			wantErr: false,
+		},
+		{
+			name:    "URL with IPv6 address",
+			dbURL:   "postgres://user:pass@[::1]:5432/dbname",
+			wantErr: false,
+		},
+		{
+			name:    "URL with mixed case scheme",
+			dbURL:   "PostgreSQL://user:pass@localhost:5432/dbname",
+			wantErr: false,
+		},
+		{
+			name:    "URL without port",
+			dbURL:   "postgres://user:pass@localhost/dbname",
+			wantErr: false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -67,7 +104,7 @@ func TestValidateQuery(t *testing.T) {
 		name    string
 		query   string
 		wantErr bool
-		errMsg  string // エラーメッセージに含まれるべき文字列（任意）
+		errMsg  string // Expected string in error message (optional)
 	}{
 		{
 			name:    "Valid single column query",
@@ -111,6 +148,92 @@ func TestValidateQuery(t *testing.T) {
 		{
 			name:    "Subquery without top-level comma is allowed",
 			query:   "SELECT (SELECT count(*) FROM orders) FROM users",
+			wantErr: false,
+		},
+		{
+			name:    "Case insensitive SELECT keyword",
+			query:   "select age from users",
+			wantErr: false,
+		},
+		{
+			name:    "Complex function with multiple arguments",
+			query:   "SELECT COALESCE(age, 0, default_age) FROM users",
+			wantErr: false,
+		},
+		{
+			name:    "Query with WHERE clause",
+			query:   "SELECT age FROM users WHERE active = true",
+			wantErr: false,
+		},
+		{
+			name:    "Query with GROUP BY",
+			query:   "SELECT MAX(age) FROM users GROUP BY department_id",
+			wantErr: false,
+		},
+		{
+			name:    "Query with multiple forbidden words",
+			query:   "SELECT age FROM users; CREATE TABLE new_users; DROP TABLE old_users;",
+			wantErr: true,
+			errMsg:  "detected a forbidden SQL command",
+		},
+		{
+			name:    "Query with nested subqueries",
+			query:   "SELECT (SELECT MAX(age) FROM (SELECT age FROM older_users) AS t) FROM users",
+			wantErr: false,
+		},
+		{
+			name:    "Query with alias in FROM clause",
+			query:   "SELECT age FROM users AS u",
+			wantErr: false,
+		},
+		{
+			name:    "Query with CASE statement",
+			query:   "SELECT CASE WHEN age > 18 THEN 'adult' ELSE 'minor' END FROM users",
+			wantErr: false,
+		},
+		{
+			name:    "Query with JOIN clause",
+			query:   "SELECT u.age FROM users u JOIN orders o ON u.id = o.user_id",
+			wantErr: false,
+		},
+		{
+			name:    "Query with multiple JOINs",
+			query:   "SELECT u.age FROM users u JOIN orders o ON u.id = o.user_id JOIN products p ON o.product_id = p.id",
+			wantErr: false,
+		},
+		{
+			name:    "Query with HAVING clause",
+			query:   "SELECT MAX(age) FROM users GROUP BY department_id HAVING MAX(age) > 40",
+			wantErr: false,
+		},
+		{
+			name:    "Query with ORDER BY clause",
+			query:   "SELECT age FROM users ORDER BY age DESC",
+			wantErr: false,
+		},
+		{
+			name:    "Query with LIMIT and OFFSET",
+			query:   "SELECT age FROM users LIMIT 10 OFFSET 20",
+			wantErr: false,
+		},
+		{
+			name:    "Query with inline comment",
+			query:   "SELECT age FROM users -- This is a comment",
+			wantErr: false,
+		},
+		{
+			name:    "Query with block comment",
+			query:   "SELECT age FROM users /* This is a block comment */",
+			wantErr: false,
+		},
+		{
+			name:    "Query with quoted identifiers",
+			query:   "SELECT \"user\".\"age\" FROM \"users\" AS \"user\"",
+			wantErr: false,
+		},
+		{
+			name:    "Function with blacklisted word as substring",
+			query:   "SELECT COUNT(*) FROM users",
 			wantErr: false,
 		},
 	}
