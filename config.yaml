@@ -1,0 +1,30 @@
+metrics:
+  - name: "custom.metric.cpu_usage"
+    tags: ["env:test", "team:sre"]
+    host: "server-01"
+    query: "SELECT age FROM users LIMIT 1;"
+
+  - name: "custom.metric.api_calls"
+    tags: ["env:test", "service:api"]
+    host: "server-01"
+    query: "SELECT COUNT(*) FROM base_calls;"
+
+  - name: "custom.metric.api_success_rate"
+    tags: ["env:test", "service:api"]
+    host: "server-01"
+    query: "SELECT COUNT(*) * 100.0 / (SELECT COUNT(*) FROM base_calls) FROM base_calls WHERE status_code BETWEEN 200 AND 299;"
+
+  - name: "custom.metric.avg_response_time"
+    tags: ["env:test", "service:api"]
+    host: "server-01"
+    query: "SELECT AVG(response_time) FROM base_calls;"
+
+  - name: "custom.metric.fax_count"
+    tags: ["env:test", "service:fax"]
+    host: "server-01"
+    query: "SELECT COUNT(*) FROM fax_logs;"
+
+  - name: "custom.metric.fax_success_rate"
+    tags: ["env:test", "service:fax"]
+    host: "server-01"
+    query: "SELECT COUNT(*) * 100.0 / (SELECT COUNT(*) FROM fax_logs) FROM fax_logs WHERE status = 'sent';"
