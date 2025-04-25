@@ -2,13 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -19,7 +24,7 @@ import (
 const datadogAPI = "https://api.datadoghq.com/api/v1/series"
 
 type MetricSender interface {
-	SendMetric(metricName string, value float64, tags []string, host string) error
+	SendMetric(ctx context.Context, metricName string, value float64, tags []string, host string) error
 }
 
 type DatadogClient struct {
@@ -52,26 +57,28 @@ type DataSeries struct {
 }
 
 type LogEntry struct {
-	Timestamp string      `json:"timestamp"`
-	Level     string      `json:"level"`
-	Message   string      `json:"message"`
-	Data      interface{} `json:"data,omitempty"`
+	Timestamp string          `json:"timestamp"`
+	Level     string          `json:"level"`
+	Message   string          `json:"message"`
+	Data      interface{}     `json:"data,omitempty"`
+	Ctx       context.Context `json:"-"`
 }
 
 type DBClient interface {
-	QueryRow(query string) (float64, error)
+	QueryRow(ctx context.Context, query string) (float64, error)
 }
 
 type SQLDB struct {
 	DB *sql.DB
 }
 
-func logJSON(level, message string, data interface{}) {
+func logJSON(ctx context.Context, level, message string, data interface{}) {
 	entry := LogEntry{
 		Timestamp: time.Now().Format(time.RFC3339),
 		Level:     level,
 		Message:   message,
 		Data:      data,
+		Ctx:       ctx,
 	}
 
 	jsonData, err := json.Marshal(entry)
@@ -83,7 +90,7 @@ func logJSON(level, message string, data interface{}) {
 	fmt.Println(string(jsonData))
 }
 
-func (d *DatadogClient) SendMetric(metricName string, value float64, tags []string, host string) error {
+func (d *DatadogClient) SendMetric(ctx context.Context, metricName string, value float64, tags []string, host string) error {
 	timestamp := float64(time.Now().Unix())
 
 	metricData := Metric{
@@ -104,7 +111,7 @@ func (d *DatadogClient) SendMetric(metricName string, value float64, tags []stri
 	}
 
 	if d.Debug {
-		logJSON("debug", "Sending metric to Datadog", map[string]interface{}{
+		logJSON(ctx, "debug", "Sending metric to Datadog", map[string]interface{}{
 			"metric":  metricName,
 			"value":   value,
 			"tags":    tags,
@@ -115,7 +122,7 @@ func (d *DatadogClient) SendMetric(metricName string, value float64, tags []stri
 	}
 
 	if d.DryRun {
-		logJSON("info", "Dry run mode - skipping actual metric submission", map[string]interface{}{
+		logJSON(ctx, "info", "Dry run mode - skipping actual metric submission", map[string]interface{}{
 			"metric": metricName,
 			"value":  value,
 			"tags":   tags,
@@ -124,7 +131,7 @@ func (d *DatadogClient) SendMetric(metricName string, value float64, tags []stri
 		return nil
 	}
 
-	req, err := http.NewRequest("POST", datadogAPI, bytes.NewBuffer(payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", datadogAPI, bytes.NewBuffer(payload))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -135,6 +142,10 @@ func (d *DatadogClient) SendMetric(metricName string, value float64, tags []stri
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			logJSON(ctx, "warn", "Datadog request cancelled or timed out", map[string]interface{}{"error": err.Error()})
+			return fmt.Errorf("datadog request failed due to context: %w", err)
+		}
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -143,7 +154,7 @@ func (d *DatadogClient) SendMetric(metricName string, value float64, tags []stri
 		return fmt.Errorf("unexpected response code: %d", resp.StatusCode)
 	}
 
-	logJSON("info", "Metric sent successfully", map[string]interface{}{
+	logJSON(ctx, "info", "Metric sent successfully", map[string]interface{}{
 		"metric": metricName,
 		"status": resp.StatusCode,
 	})
@@ -166,10 +177,14 @@ func loadConfig(filename string) (*Config, error) {
 	return &config, nil
 }
 
-func fetchMetricFromDB(db *sql.DB, query string) (float64, error) {
+func fetchMetricFromDB(ctx context.Context, db *sql.DB, query string) (float64, error) {
 	var value interface{}
-	err := db.QueryRow(query).Scan(&value)
+	err := db.QueryRowContext(ctx, query).Scan(&value)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			logJSON(ctx, "warn", "Database query cancelled or timed out", map[string]interface{}{"query": query, "error": err.Error()})
+			return 0, fmt.Errorf("database query failed due to context: %w", err)
+		}
 		return 0, fmt.Errorf("failed to execute query: %w", err)
 	}
 
@@ -180,34 +195,54 @@ func fetchMetricFromDB(db *sql.DB, query string) (float64, error) {
 		return float64(v), nil
 	case float64:
 		return v, nil
+	case []byte:
+		f, err := strconv.ParseFloat(string(v), 64)
+		if err != nil {
+			return 0, fmt.Errorf("could not convert byte slice to float64: %w", err)
+		}
+		return f, nil
 	default:
 		return 0, fmt.Errorf("unexpected data type: %T", v)
 	}
 }
 
-func (p *SQLDB) QueryRow(query string) (float64, error) {
+func (p *SQLDB) QueryRow(ctx context.Context, query string) (float64, error) {
 	startTime := time.Now()
-	value, err := fetchMetricFromDB(p.DB, query)
+	value, err := fetchMetricFromDB(ctx, p.DB, query)
 	duration := time.Since(startTime)
 
-	// Log the query execution time
-	logJSON("info", "Query execution completed", map[string]interface{}{
+	logJSON(ctx, "info", "Query execution completed", map[string]interface{}{
 		"query_time_ms": float64(duration.Microseconds()) / 1000.0,
 		"query":         query,
+		"error":         nil,
 	})
+	if err != nil {
+		logJSON(ctx, "error", "Query execution failed", map[string]interface{}{
+			"query_time_ms": float64(duration.Microseconds()) / 1000.0,
+			"query":         query,
+			"error":         err.Error(),
+		})
+	}
 
 	return value, err
 }
 
-func run() error {
+func run(ctx context.Context) error {
 	yamlFile := flag.String("config", "config.yaml", "Path to the YAML configuration file")
 	versionFlag := flag.Bool("version", false, "Print the version information")
 	debugFlag := flag.Bool("debug", false, "Enable debug mode")
 	dryRunFlag := flag.Bool("dry-run", false, "Dry run mode - don't actually send metrics to Datadog")
+	timeout := flag.Duration("timeout", 30*time.Second, "Global timeout for operations like DB query and API call")
 	flag.Parse()
 
+	if *timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+		defer cancel()
+	}
+
 	if *versionFlag {
-		fmt.Println("Version 1.0.0")
+		_version()
 		return nil
 	}
 
@@ -221,29 +256,40 @@ func run() error {
 		return fmt.Errorf("DATABASE_URL is not set")
 	}
 
-	dbType := os.Getenv("DATABASE_TYPE") // `postgres` または `mysql`
+	if err := validateDBURL(dbURL); err != nil {
+		return fmt.Errorf("invalid DATABASE_URL: %w", err)
+	}
+
+	dbType := os.Getenv("DATABASE_TYPE")
 	if dbType == "" {
-		dbType = "postgres" // デフォルトは PostgreSQL
+		dbType = "postgres"
 	}
 
 	if *debugFlag {
-		logJSON("debug", "Debug mode enabled", map[string]interface{}{
+		logJSON(ctx, "debug", "Debug mode enabled", map[string]interface{}{
 			"config":        *yamlFile,
 			"database_url":  dbURL,
 			"database_type": dbType,
 			"dry_run":       *dryRunFlag,
+			"timeout":       timeout.String(),
 		})
 	}
 
 	if *dryRunFlag {
-		logJSON("info", "Dry run mode enabled - no metrics will be sent to Datadog", nil)
+		logJSON(ctx, "info", "Dry run mode enabled - no metrics will be sent to Datadog", nil)
 	}
 
 	db, err := sql.Open(dbType, dbURL)
 	if err != nil {
-		return fmt.Errorf("failed to connect to DB: %w", err)
+		return fmt.Errorf("failed to initialize DB connection: %w", err)
 	}
 	defer db.Close()
+
+	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer pingCancel()
+	if err = db.PingContext(pingCtx); err != nil {
+		return fmt.Errorf("failed to connect to DB: %w", err)
+	}
 
 	client := &DatadogClient{
 		APIKey: apiKey,
@@ -257,7 +303,7 @@ func run() error {
 	}
 
 	if *debugFlag {
-		logJSON("debug", "Configuration file loaded", map[string]interface{}{
+		logJSON(ctx, "debug", "Configuration file loaded", map[string]interface{}{
 			"metrics_count": len(config.Metrics),
 		})
 	}
@@ -265,43 +311,48 @@ func run() error {
 	dbClient := &SQLDB{DB: db}
 
 	for _, metric := range config.Metrics {
+		if err := validateQuery(metric.Query); err != nil {
+			logJSON(ctx, "error", "Invalid query in config", map[string]interface{}{
+				"metric": metric.Name,
+				"query":  metric.Query,
+				"error":  err.Error(),
+			})
+			continue
+		}
+
 		var value float64
 		if metric.Query != "" {
 			if *debugFlag {
-				logJSON("debug", "Executing SQL query", map[string]interface{}{
+				logJSON(ctx, "debug", "Executing SQL query", map[string]interface{}{
 					"metric": metric.Name,
 					"query":  metric.Query,
 				})
 			}
 
-			startTime := time.Now()
-			fetchedValue, err := dbClient.QueryRow(metric.Query)
-			duration := time.Since(startTime)
+			fetchedValue, errDb := dbClient.QueryRow(ctx, metric.Query)
 
-			if err != nil {
-				logJSON("error", "Error fetching metric from DB", map[string]interface{}{
-					"metric":        metric.Name,
-					"error":         err.Error(),
-					"query_time_ms": float64(duration.Microseconds()) / 1000.0,
+			if errDb != nil {
+				logJSON(ctx, "error", "Error fetching metric from DB", map[string]interface{}{
+					"metric": metric.Name,
+					"error":  errDb.Error(),
 				})
 				continue
 			}
 			value = fetchedValue
 
 			if *debugFlag {
-				logJSON("debug", "SQL query result", map[string]interface{}{
-					"metric":        metric.Name,
-					"value":         value,
-					"query_time_ms": float64(duration.Microseconds()) / 1000.0,
+				logJSON(ctx, "debug", "SQL query result", map[string]interface{}{
+					"metric": metric.Name,
+					"value":  value,
 				})
 			}
 		}
 
-		err := client.SendMetric(metric.Name, value, metric.Tags, metric.Host)
-		if err != nil {
-			logJSON("error", "Failed to send metric", map[string]interface{}{
+		errSend := client.SendMetric(ctx, metric.Name, value, metric.Tags, metric.Host)
+		if errSend != nil {
+			logJSON(ctx, "error", "Failed to send metric", map[string]interface{}{
 				"metric": metric.Name,
-				"error":  err.Error(),
+				"error":  errSend.Error(),
 			})
 		}
 	}
@@ -310,8 +361,13 @@ func run() error {
 }
 
 func main() {
-	if err := run(); err != nil {
-		logJSON("fatal", "Execution error", map[string]interface{}{
+	ctx := context.Background()
+
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx); err != nil {
+		logJSON(context.Background(), "fatal", "Execution error", map[string]interface{}{
 			"error": err.Error(),
 		})
 		os.Exit(1)
