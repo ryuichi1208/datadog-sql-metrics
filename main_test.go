@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ type MockMetricSender struct {
 }
 
 // Mock の SendMetric メソッド
-func (m *MockMetricSender) SendMetric(metricName string, value float64, tags []string, host string) error {
+func (m *MockMetricSender) SendMetric(ctx context.Context, metricName string, value float64, tags []string, host string) error {
 	m.SentMetrics = append(m.SentMetrics, DataSeries{
 		Metric: metricName,
 		Points: [][]float64{{float64(time.Now().Unix()), value}},
@@ -70,13 +71,25 @@ func TestMockMetricSender(t *testing.T) {
 	value := 42.0
 	tags := []string{"env:test"}
 	host := "test-host"
+	ctx := context.Background()
 
-	err := mockSender.SendMetric(metricName, value, tags, host)
+	err := mockSender.SendMetric(ctx, metricName, value, tags, host)
 	if err != nil {
 		t.Fatalf("SendMetric failed: %v", err)
 	}
 
 	if len(mockSender.SentMetrics) != 1 {
 		t.Fatalf("Expected 1 metric, got %d", len(mockSender.SentMetrics))
+	}
+
+	sent := mockSender.SentMetrics[0]
+	if sent.Metric != metricName {
+		t.Errorf("Expected metric name '%s', got '%s'", metricName, sent.Metric)
+	}
+	if sent.Host != host {
+		t.Errorf("Expected host '%s', got '%s'", host, sent.Host)
+	}
+	if len(sent.Points) != 1 || len(sent.Points[0]) != 2 || sent.Points[0][1] != value {
+		t.Errorf("Expected value %f, got points %v", value, sent.Points)
 	}
 }
