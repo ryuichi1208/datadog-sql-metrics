@@ -44,7 +44,12 @@ func TestLoadConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to write test config file: %v", err)
 		}
-		defer os.Remove(tempFile) // Clean up after test
+		defer func() {
+			removeErr := os.Remove(tempFile) // Clean up after test
+			if removeErr != nil {
+				t.Logf("Failed to remove temporary file: %v", removeErr)
+			}
+		}()
 
 		// Load the temporary config
 		config, err = loadConfig(tempFile)

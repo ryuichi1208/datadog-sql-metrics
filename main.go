@@ -148,7 +148,12 @@ func (d *DatadogClient) SendMetric(ctx context.Context, metricName string, value
 		}
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			logJSON(ctx, "warn", "Failed to close response body", map[string]interface{}{"error": closeErr.Error()})
+		}
+	}()
 
 	if resp.StatusCode != http.StatusAccepted {
 		return fmt.Errorf("unexpected response code: %d", resp.StatusCode)
@@ -283,7 +288,12 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize DB connection: %w", err)
 	}
-	defer db.Close()
+	defer func() {
+		closeErr := db.Close()
+		if closeErr != nil {
+			logJSON(ctx, "warn", "Failed to close database connection", map[string]interface{}{"error": closeErr.Error()})
+		}
+	}()
 
 	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer pingCancel()

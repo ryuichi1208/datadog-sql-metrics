@@ -1,0 +1,28 @@
+run:
+  timeout: 3m
+  tests: true
+
+linters:
+  enable:
+    - errcheck # エラーチェックを確認
+    - gofmt # コードフォーマットを確認
+    - gosimple # コードを単純にできる場所を指摘
+    - govet # Go vetを実行（Goコンパイラの静的解析）
+    - ineffassign # 未使用の変数割り当てを検出
+    - staticcheck # 一般的な静的解析
+    - typecheck # 型チェックエラーを検出
+    - unused # 未使用のコードを検出
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+  govet:
+    check-shadowing: true # これでシャドウイングを検出します
+    enable-all: false # govetの一部のチェックのみを有効にします
+    disable:
+      - fieldalignment # メモリアラインメントに関する警告を無効化
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
